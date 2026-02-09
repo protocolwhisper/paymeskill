@@ -1,0 +1,225 @@
+/* Light mode (default - white theme) */
+.book.color-theme-0 .book-body {
+  color: #333;
+  background: #fff;
+}
+
+.book.color-theme-0 .book-summary {
+  background: #fafafa;
+  color: #333;
+}
+
+.book.color-theme-0 .book-summary ul.summary li a,
+.book.color-theme-0 .book-summary ul.summary li span {
+  color: #333;
+}
+
+.book.color-theme-0 .book-summary ul.summary li.active > a {
+  color: #4183c4;
+  background: #f0f0f0;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal {
+  color: #333;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal h1,
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal h2,
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal h3,
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal h4 {
+  color: #000;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal code {
+  background: #f5f5f5;
+  color: #333;
+  border: 1px solid #ddd;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal pre {
+  background: #f5f5f5;
+  border: 1px solid #ddd;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal pre code {
+  background: transparent;
+  border: none;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal table {
+  border-color: #ddd;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal table thead {
+  background: #f5f5f5;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal table tbody tr {
+  border-color: #ddd;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal table tbody tr:nth-child(2n) {
+  background: #fafafa;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal hr {
+  border-color: #ddd;
+}
+
+.book.color-theme-0 .book-body .page-wrapper .page-inner section.normal blockquote {
+  border-left-color: #4183c4;
+  color: #666;
+}
+
+/* Search input - light mode */
+.book.color-theme-0 #book-search-input input {
+  background: #fff;
+  color: #333;
+  border-color: #ddd;
+}
+
+/* Book header - light mode */
+.book.color-theme-0 .book-header {
+  background: #fff;
+  border-bottom: 1px solid #ddd;
+}
+
+.book.color-theme-0 .book-header .btn {
+  color: #333;
+}
+
+.book.color-theme-0 .book-header .btn:hover {
+  color: #000;
+  background: #f5f5f5;
+}
+
+/* Base styles - ensure light mode is default when no theme class */
+.book:not(.color-theme-1):not(.color-theme-2) .book-body {
+  color: #333;
+  background: #fff;
+}
+
+.book:not(.color-theme-1):not(.color-theme-2) .book-summary {
+  background: #fafafa;
+  color: #333;
+}
+
+/* Ensure fontsettings controls are visible and prominent */
+.book .font-settings {
+  display: block !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+.book .font-settings .toggle-fontsettings {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  cursor: pointer !important;
+}
+
+/* Make gear icon more visible */
+.book .book-header .toggle-fontsettings {
+  opacity: 1 !important;
+  visibility: visible !important;
+  display: inline-block !important;
+}
+
+.book .book-header .toggle-fontsettings:hover {
+  opacity: 0.8 !important;
+}
+
+/* Dark mode (night theme - color-theme-1) */
+.book.color-theme-1 .book-body {
+  color: #e0e0e0;
+  background: #1e1e1e;
+}
+
+.book.color-theme-1 .book-summary {
+  background: #252525;
+  color: #e0e0e0;
+}
+
+.book.color-theme-1 .book-summary ul.summary li a,
+.book.color-theme-1 .book-summary ul.summary li span {
+  color: #e0e0e0;
+}
+
+.book.color-theme-1 .book-summary ul.summary li.active > a {
+  color: #4a9eff;
+  background: #2a2a2a;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal {
+  color: #e0e0e0;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal h1,
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal h2,
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal h3,
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal h4 {
+  color: #ffffff;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal code {
+  background: #2d2d2d;
+  color: #d4d4d4;
+  border: 1px solid #3d3d3d;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal pre {
+  background: #2d2d2d;
+  border: 1px solid #3d3d3d;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal pre code {
+  background: transparent;
+  border: none;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal table {
+  border-color: #3d3d3d;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal table thead {
+  background: #2a2a2a;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal table tbody tr {
+  border-color: #3d3d3d;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal table tbody tr:nth-child(2n) {
+  background: #252525;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal hr {
+  border-color: #3d3d3d;
+}
+
+.book.color-theme-1 .book-body .page-wrapper .page-inner section.normal blockquote {
+  border-left-color: #4a9eff;
+  color: #b0b0b0;
+}
+
+/* Search input - dark mode */
+.book.color-theme-1 #book-search-input input {
+  background: #2a2a2a;
+  color: #e0e0e0;
+  border-color: #3d3d3d;
+}
+
+/* Book header - dark mode */
+.book.color-theme-1 .book-header {
+  background: #252525;
+  border-bottom: 1px solid #3d3d3d;
+}
+
+.book.color-theme-1 .book-header .btn {
+  color: #e0e0e0;
+}
+
+.book.color-theme-1 .book-header .btn:hover {
+  color: #ffffff;
+  background: #2a2a2a;
+}

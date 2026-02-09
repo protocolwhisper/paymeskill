@@ -1,0 +1,27 @@
+{
+  "title": "PayloadExchange Documentation",
+  "description": "The marketplace connecting AI agent developers with sponsors",
+  "author": "PayloadExchange",
+  "language": "en",
+  "root": "./",
+  "structure": {
+    "readme": "README.md",
+    "summary": "SUMMARY.md"
+  },
+  "styles": {
+    "website": "styles/website.css"
+  },
+  "plugins": [
+    "theme-default",
+    "lunr",
+    "highlight",
+    "fontsettings"
+  ],
+  "pluginsConfig": {
+    "fontsettings": {
+      "theme": "night",
+      "family": "sans",
+      "size": 2
+    }
+  }
+}
