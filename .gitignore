@@ -5,3 +5,4 @@ node_modules/
 frontend/dist
 docs/_book
 *.log
+.env

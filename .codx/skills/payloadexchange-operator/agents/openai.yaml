@@ -1,0 +1,5 @@
+version: 1
+interface:
+  display_name: PayloadExchange Operator
+  short_description: Run sponsored API and x402 campaign flows.
+  default_prompt: Operate the PayloadExchange MVP by creating sponsored APIs, onboarding users, running sponsor campaigns, handling x402 payments, and recording creator metrics.
