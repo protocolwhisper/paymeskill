@@ -13,7 +13,7 @@ use axum::{
 use chrono::Utc;
 use prometheus::{Encoder, TextEncoder};
 use sqlx::types::Json as DbJson;
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::info;
 use uuid::Uuid;
@@ -115,34 +115,90 @@ async fn create_profile(
     State(state): State<SharedState>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Response {
-    let mut state = state.inner.write().await;
-    let profile = UserProfile {
-        id: Uuid::new_v4(),
-        email: payload.email,
-        region: payload.region,
-        roles: payload.roles,
-        tools_used: payload.tools_used,
-        attributes: payload.attributes,
-        created_at: Utc::now(),
+    let metrics = {
+        let state = state.inner.read().await;
+        state.metrics.clone()
     };
 
-    state.users.insert(profile.id, profile.clone());
-    respond(
-        &state.metrics,
-        "/profiles",
-        Ok((StatusCode::CREATED, Json(profile))),
-    )
+    let result: ApiResult<(StatusCode, Json<UserProfile>)> = async {
+        let db = {
+            let state = state.inner.read().await;
+            state.db.clone()
+        }
+        .ok_or_else(|| ApiError::config("Postgres not configured; set DATABASE_URL"))?;
+
+        if payload.email.trim().is_empty() {
+            return Err(ApiError::validation("email is required"));
+        }
+
+        if payload.region.trim().is_empty() {
+            return Err(ApiError::validation("region is required"));
+        }
+
+        let profile = UserProfile {
+            id: Uuid::new_v4(),
+            email: payload.email,
+            region: payload.region,
+            roles: payload.roles,
+            tools_used: payload.tools_used,
+            attributes: payload.attributes,
+            created_at: Utc::now(),
+        };
+
+        let inserted = sqlx::query_as::<_, UserProfile>(
+            r#"
+            insert into users (id, email, region, roles, tools_used, attributes, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7)
+            returning id, email, region, roles, tools_used, attributes, created_at
+            "#,
+        )
+        .bind(profile.id)
+        .bind(profile.email)
+        .bind(profile.region)
+        .bind(profile.roles)
+        .bind(profile.tools_used)
+        .bind(DbJson(profile.attributes))
+        .bind(profile.created_at)
+        .fetch_one(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+        Ok((StatusCode::CREATED, Json(inserted)))
+    }
+    .await;
+
+    respond(&metrics, "/profiles", result)
 }
 
 async fn list_profiles(State(state): State<SharedState>) -> Response {
-    let state = state.inner.read().await;
-    let mut profiles: Vec<UserProfile> = state.users.values().cloned().collect();
-    profiles.sort_by_key(|profile| profile.created_at);
-    respond(
-        &state.metrics,
-        "/profiles",
-        Ok((StatusCode::OK, Json(profiles))),
-    )
+    let metrics = {
+        let state = state.inner.read().await;
+        state.metrics.clone()
+    };
+
+    let result: ApiResult<(StatusCode, Json<Vec<UserProfile>>)> = async {
+        let db = {
+            let state = state.inner.read().await;
+            state.db.clone()
+        }
+        .ok_or_else(|| ApiError::config("Postgres not configured; set DATABASE_URL"))?;
+
+        let profiles = sqlx::query_as::<_, UserProfile>(
+            r#"
+            select id, email, region, roles, tools_used, attributes, created_at
+            from users
+            order by created_at desc
+            "#,
+        )
+        .fetch_all(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+        Ok((StatusCode::OK, Json(profiles)))
+    }
+    .await;
+
+    respond(&metrics, "/profiles", result)
 }
 
 async fn register_user(
@@ -289,11 +345,6 @@ async fn create_campaign(
         let campaign = Campaign::try_from(row)
             .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err))?;
 
-        {
-            let mut state = state.inner.write().await;
-            state.campaigns.insert(campaign.id, campaign.clone());
-        }
-
         let base = public_base_url.trim_end_matches('/');
         let response = CreateCampaignResponse {
             campaign: campaign.clone(),
@@ -309,86 +360,75 @@ async fn create_campaign(
 }
 
 async fn list_campaigns(State(state): State<SharedState>) -> Response {
-    let needs_reload = {
+    let metrics = {
         let state = state.inner.read().await;
-        state.campaigns.is_empty()
+        state.metrics.clone()
     };
-    if needs_reload {
-        let _ = load_campaigns_from_db(&state).await;
-    }
 
-    let state = state.inner.read().await;
-    let mut campaigns: Vec<Campaign> = state.campaigns.values().cloned().collect();
-    campaigns.sort_by_key(|campaign| campaign.created_at);
-    respond(
-        &state.metrics,
-        "/campaigns",
-        Ok((StatusCode::OK, Json(campaigns))),
-    )
+    let result: ApiResult<(StatusCode, Json<Vec<Campaign>>)> = async {
+        let mut campaigns = load_campaigns_from_db(&state).await?;
+        campaigns.sort_by_key(|campaign| campaign.created_at);
+        Ok((StatusCode::OK, Json(campaigns)))
+    }
+    .await;
+
+    respond(&metrics, "/campaigns", result)
 }
 
 async fn get_campaign(State(state): State<SharedState>, Path(campaign_id): Path<Uuid>) -> Response {
-    let needs_reload = {
+    let metrics = {
         let state = state.inner.read().await;
-        state.campaigns.is_empty()
+        state.metrics.clone()
     };
-    if needs_reload {
-        let _ = load_campaigns_from_db(&state).await;
-    }
 
-    let state = state.inner.read().await;
-    let campaign = state.campaigns.get(&campaign_id).cloned();
-    match campaign {
-        Some(value) => respond(
-            &state.metrics,
-            "/campaigns/:campaign_id",
-            Ok((StatusCode::OK, Json(value))),
-        ),
-        None => respond(
-            &state.metrics,
-            "/campaigns/:campaign_id",
-            Err::<Response, ApiError>(ApiError::not_found("campaign not found")),
-        ),
+    let result: ApiResult<(StatusCode, Json<Campaign>)> = async {
+        let campaigns = load_campaigns_from_db(&state).await?;
+        let campaign = campaigns
+            .into_iter()
+            .find(|campaign| campaign.id == campaign_id)
+            .ok_or_else(|| ApiError::not_found("campaign not found"))?;
+        Ok((StatusCode::OK, Json(campaign)))
     }
+    .await;
+
+    respond(&metrics, "/campaigns/:campaign_id", result)
 }
 
 async fn list_campaign_discovery(State(state): State<SharedState>) -> Response {
-    let needs_reload = {
+    let (metrics, base) = {
         let state = state.inner.read().await;
-        state.campaigns.is_empty()
+        (
+            state.metrics.clone(),
+            state
+                .config
+                .public_base_url
+                .trim_end_matches('/')
+                .to_string(),
+        )
     };
-    if needs_reload {
-        let _ = load_campaigns_from_db(&state).await;
-    }
 
-    let state = state.inner.read().await;
-    let base = state
-        .config
-        .public_base_url
-        .trim_end_matches('/')
-        .to_string();
-    let mut rows: Vec<CampaignDiscoveryItem> = state
-        .campaigns
-        .values()
-        .cloned()
-        .filter(|campaign| campaign.active)
-        .filter(|campaign| !campaign.query_urls.is_empty())
-        .map(|campaign| CampaignDiscoveryItem {
-            campaign_id: campaign.id,
-            name: campaign.name.clone(),
-            sponsor: campaign.sponsor.clone(),
-            active: campaign.active,
-            query_urls: campaign.query_urls.clone(),
-            service_run_url: format!("{base}/proxy/:service/run"),
-            sponsored_api_discovery_url: format!("{base}/sponsored-apis"),
-        })
-        .collect();
-    rows.sort_by_key(|item| item.name.clone());
-    respond(
-        &state.metrics,
-        "/campaigns/discovery",
-        Ok((StatusCode::OK, Json(rows))),
-    )
+    let result: ApiResult<(StatusCode, Json<Vec<CampaignDiscoveryItem>>)> = async {
+        let campaigns = load_campaigns_from_db(&state).await?;
+        let mut rows: Vec<CampaignDiscoveryItem> = campaigns
+            .into_iter()
+            .filter(|campaign| campaign.active)
+            .filter(|campaign| !campaign.query_urls.is_empty())
+            .map(|campaign| CampaignDiscoveryItem {
+                campaign_id: campaign.id,
+                name: campaign.name,
+                sponsor: campaign.sponsor,
+                active: campaign.active,
+                query_urls: campaign.query_urls,
+                service_run_url: format!("{base}/proxy/:service/run"),
+                sponsored_api_discovery_url: format!("{base}/sponsored-apis"),
+            })
+            .collect();
+        rows.sort_by_key(|item| item.name.clone());
+        Ok((StatusCode::OK, Json(rows)))
+    }
+    .await;
+
+    respond(&metrics, "/campaigns/discovery", result)
 }
 
 async fn load_campaigns_from_db(state: &SharedState) -> ApiResult<Vec<Campaign>> {
@@ -417,8 +457,6 @@ async fn load_campaigns_from_db(state: &SharedState) -> ApiResult<Vec<Campaign>>
         .collect::<Result<Vec<_>, _>>()
         .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err))?;
 
-    let mut lock = state.inner.write().await;
-    lock.campaigns = campaigns.iter().map(|c| (c.id, c.clone())).collect();
     Ok(campaigns)
 }
 
@@ -426,47 +464,76 @@ async fn complete_task(
     State(state): State<SharedState>,
     Json(payload): Json<TaskCompletionRequest>,
 ) -> Response {
-    let needs_reload = {
+    let metrics = {
         let state = state.inner.read().await;
-        state.campaigns.is_empty()
-    };
-    if needs_reload {
-        let _ = load_campaigns_from_db(&state).await;
-    }
-
-    let mut state = state.inner.write().await;
-
-    if !state.campaigns.contains_key(&payload.campaign_id) {
-        return respond(
-            &state.metrics,
-            "/tasks/complete",
-            Err::<Response, ApiError>(ApiError::not_found("campaign not found")),
-        );
-    }
-
-    if !state.users.contains_key(&payload.user_id) {
-        return respond(
-            &state.metrics,
-            "/tasks/complete",
-            Err::<Response, ApiError>(ApiError::not_found("user not found")),
-        );
-    }
-
-    let completion = TaskCompletion {
-        id: Uuid::new_v4(),
-        campaign_id: payload.campaign_id,
-        user_id: payload.user_id,
-        task_name: payload.task_name,
-        details: payload.details,
-        created_at: Utc::now(),
+        state.metrics.clone()
     };
 
-    state.task_completions.push(completion.clone());
-    respond(
-        &state.metrics,
-        "/tasks/complete",
-        Ok((StatusCode::CREATED, Json(completion))),
-    )
+    let result: ApiResult<(StatusCode, Json<TaskCompletion>)> = async {
+        let db = {
+            let state = state.inner.read().await;
+            state.db.clone()
+        }
+        .ok_or_else(|| ApiError::config("Postgres not configured; set DATABASE_URL"))?;
+
+        // Verify campaign exists
+        let campaign_exists =
+            sqlx::query_scalar::<_, bool>("select exists(select 1 from campaigns where id = $1)")
+                .bind(payload.campaign_id)
+                .fetch_one(&db)
+                .await
+                .map_err(|err| {
+                    ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+                })?;
+
+        if !campaign_exists {
+            return Err(ApiError::not_found("campaign not found"));
+        }
+
+        // Verify user exists
+        let user_exists =
+            sqlx::query_scalar::<_, bool>("select exists(select 1 from users where id = $1)")
+                .bind(payload.user_id)
+                .fetch_one(&db)
+                .await
+                .map_err(|err| {
+                    ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+                })?;
+
+        if !user_exists {
+            return Err(ApiError::not_found("user not found"));
+        }
+
+        let completion = TaskCompletion {
+            id: Uuid::new_v4(),
+            campaign_id: payload.campaign_id,
+            user_id: payload.user_id,
+            task_name: payload.task_name,
+            details: payload.details,
+            created_at: Utc::now(),
+        };
+
+        sqlx::query(
+            r#"
+            insert into task_completions (id, campaign_id, user_id, task_name, details, created_at)
+            values ($1, $2, $3, $4, $5, $6)
+            "#,
+        )
+        .bind(completion.id)
+        .bind(completion.campaign_id)
+        .bind(completion.user_id)
+        .bind(completion.task_name.clone())
+        .bind(completion.details.clone())
+        .bind(completion.created_at)
+        .execute(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+        Ok((StatusCode::CREATED, Json(completion)))
+    }
+    .await;
+
+    respond(&metrics, "/tasks/complete", result)
 }
 
 async fn run_tool(
@@ -525,27 +592,41 @@ async fn run_proxy(
 ) -> Response {
     let has_header = headers.contains_key(PAYMENT_SIGNATURE_HEADER);
 
-    if !has_header {
-        let needs_reload = {
-            let state = state.inner.read().await;
-            state.campaigns.is_empty()
-        };
-        if needs_reload {
-            let _ = load_campaigns_from_db(&state).await;
+    let (db, price, metrics, http, config) = {
+        let state = state.inner.read().await;
+        (
+            state.db.clone(),
+            state.service_price(&service),
+            state.metrics.clone(),
+            state.http.clone(),
+            state.config.clone(),
+        )
+    };
+
+    let db = match db {
+        Some(db) => db,
+        None => {
+            return respond(
+                &metrics,
+                "/proxy/:service/run",
+                Err::<Response, ApiError>(ApiError::config(
+                    "Postgres not configured; set DATABASE_URL",
+                )),
+            );
         }
-    }
+    };
 
     if has_header {
-        let (user_exists, price, metrics, http, config) = {
-            let state = state.inner.read().await;
-            (
-                state.users.contains_key(&payload.user_id),
-                state.service_price(&service),
-                state.metrics.clone(),
-                state.http.clone(),
-                state.config.clone(),
-            )
-        };
+        // Verify user exists in database
+        let user_exists =
+            sqlx::query_scalar::<_, bool>("select exists(select 1 from users where id = $1)")
+                .bind(payload.user_id)
+                .fetch_one(&db)
+                .await
+                .map_err(|err| {
+                    ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
+                })
+                .unwrap_or(false);
 
         if !user_exists {
             return respond(
@@ -583,29 +664,58 @@ async fn run_proxy(
         return respond(&metrics, "/proxy/:service/run", result);
     }
 
-    let mut state = state.inner.write().await;
+    // Load user from database
+    let user = sqlx::query_as::<_, UserProfile>(
+        "select id, email, region, roles, tools_used, attributes, created_at from users where id = $1"
+    )
+    .bind(payload.user_id)
+    .fetch_optional(&db)
+    .await
+    .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+    .and_then(|opt| {
+        opt.ok_or_else(|| ApiError::not_found("user profile is required before proxy usage"))
+    });
 
-    if !state.users.contains_key(&payload.user_id) {
-        return respond(
-            &state.metrics,
-            "/proxy/:service/run",
-            Err::<Response, ApiError>(ApiError::not_found(
-                "user profile is required before proxy usage",
-            )),
-        );
-    }
-
-    let price = state.service_price(&service);
-
-    let user = match state.users.get(&payload.user_id) {
-        Some(user) => user,
-        None => {
+    let user = match user {
+        Ok(user) => user,
+        Err(err) => {
             return respond(
-                &state.metrics,
+                &metrics,
                 "/proxy/:service/run",
-                Err::<Response, ApiError>(ApiError::not_found(
-                    "user profile is required before proxy usage",
-                )),
+                Err::<Response, ApiError>(err),
+            );
+        }
+    };
+
+    // Load campaigns from database
+    let campaigns = sqlx::query_as::<_, CampaignRow>(
+        r#"
+        select id, name, sponsor, target_roles, target_tools, required_task,
+            subsidy_per_call_cents, budget_total_cents, budget_remaining_cents,
+            query_urls, active, created_at
+        from campaigns
+        where active = true and budget_remaining_cents >= $1
+        order by created_at desc
+        "#,
+    )
+    .bind(price as i64)
+    .fetch_all(&db)
+    .await
+    .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))
+    .and_then(|rows| {
+        rows.into_iter()
+            .map(Campaign::try_from)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err))
+    });
+
+    let campaigns = match campaigns {
+        Ok(campaigns) => campaigns,
+        Err(err) => {
+            return respond(
+                &metrics,
+                "/proxy/:service/run",
+                Err::<Response, ApiError>(err),
             );
         }
     };
@@ -613,64 +723,93 @@ async fn run_proxy(
     let mut match_without_task: Option<Campaign> = None;
     let mut match_with_task: Option<Campaign> = None;
 
-    let campaigns: Vec<Campaign> = state.campaigns.values().cloned().collect();
     for campaign in campaigns {
-        if !campaign.active || campaign.budget_remaining_cents < price {
+        if !user_matches_campaign(&user, &campaign) {
             continue;
         }
 
-        if !user_matches_campaign(user, &campaign) {
-            continue;
-        }
-
-        if has_completed_task(
-            &state,
-            campaign.id,
-            payload.user_id,
-            &campaign.required_task,
-        ) {
-            match_with_task = Some(campaign);
-            break;
-        }
-
-        if match_without_task.is_none() {
-            match_without_task = Some(campaign);
+        match has_completed_task(&db, campaign.id, payload.user_id, &campaign.required_task).await {
+            Ok(true) => {
+                match_with_task = Some(campaign);
+                break;
+            }
+            Ok(false) => {
+                if match_without_task.is_none() {
+                    match_without_task = Some(campaign);
+                }
+            }
+            Err(err) => {
+                return respond(
+                    &metrics,
+                    "/proxy/:service/run",
+                    Err::<Response, ApiError>(err),
+                );
+            }
         }
     }
 
     if let Some(campaign) = match_with_task {
-        if let Some(persisted) = state.campaigns.get_mut(&campaign.id) {
-            persisted.budget_remaining_cents =
-                persisted.budget_remaining_cents.saturating_sub(price);
-            if persisted.budget_remaining_cents == 0 {
-                persisted.active = false;
-            }
+        let new_remaining = campaign.budget_remaining_cents.saturating_sub(price);
+        let still_active = new_remaining >= price && new_remaining > 0;
+
+        // Update campaign budget in database
+        let budget_update = sqlx::query(
+            r#"
+            update campaigns
+            set budget_remaining_cents = $1, active = $2
+            where id = $3
+            "#,
+        )
+        .bind(new_remaining as i64)
+        .bind(still_active)
+        .bind(campaign.id)
+        .execute(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
+        if let Err(err) = budget_update {
+            return respond(
+                &metrics,
+                "/proxy/:service/run",
+                Err::<Response, ApiError>(err),
+            );
         }
 
         let tx_hash = format!("sponsor-{}", Uuid::new_v4());
-        state.payments.insert(
-            tx_hash.clone(),
-            PaymentRecord {
-                tx_hash: tx_hash.clone(),
-                campaign_id: Some(campaign.id),
-                service: service.clone(),
-                amount_cents: price,
-                payer: campaign.sponsor.clone(),
-                source: PaymentSource::Sponsor,
-                status: PaymentStatus::Settled,
-                created_at: Utc::now(),
-            },
-        );
 
-        state
-            .metrics
+        // Save payment to database
+        let payment_insert = sqlx::query(
+            r#"
+            insert into payments (tx_hash, campaign_id, service, amount_cents, payer, source, status, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8)
+            "#,
+        )
+        .bind(&tx_hash)
+        .bind(campaign.id)
+        .bind(&service)
+        .bind(price as i64)
+        .bind(&campaign.sponsor)
+        .bind("sponsor")
+        .bind("settled")
+        .bind(Utc::now())
+        .execute(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()));
+        if let Err(err) = payment_insert {
+            return respond(
+                &metrics,
+                "/proxy/:service/run",
+                Err::<Response, ApiError>(err),
+            );
+        }
+
+        metrics
             .payment_events_total
             .with_label_values(&["sponsored", "settled"])
             .inc();
-        state.metrics.sponsor_spend_cents_total.inc_by(price);
+        metrics.sponsor_spend_cents_total.inc_by(price);
 
         return respond(
-            &state.metrics,
+            &metrics,
             "/proxy/:service/run",
             Ok(build_paid_tool_response(
                 service,
@@ -685,7 +824,7 @@ async fn run_proxy(
 
     if let Some(campaign) = match_without_task {
         return respond(
-            &state.metrics,
+            &metrics,
             "/proxy/:service/run",
             Err::<Response, ApiError>(ApiError::precondition(format!(
                 "complete sponsor task '{}' for campaign '{}' before sponsored usage",
@@ -695,10 +834,10 @@ async fn run_proxy(
     }
 
     respond(
-        &state.metrics,
+        &metrics,
         "/proxy/:service/run",
         Err::<Response, ApiError>(payment_required_error(
-            &state.config,
+            &config,
             &service,
             price,
             &format!("/proxy/{service}/run"),
@@ -1069,206 +1208,280 @@ async fn ingest_x402scan_settlement(
     State(state): State<SharedState>,
     Json(payload): Json<X402ScanSettlementRequest>,
 ) -> Response {
-    let mut state = state.inner.write().await;
-
-    state.payments.insert(
-        payload.tx_hash.clone(),
-        PaymentRecord {
-            tx_hash: payload.tx_hash,
-            campaign_id: payload.campaign_id,
-            service: payload.service,
-            amount_cents: payload.amount_cents,
-            payer: payload.payer,
-            source: payload.source.clone(),
-            status: payload.status.clone(),
-            created_at: Utc::now(),
-        },
-    );
-
-    let mode = match payload.source {
-        PaymentSource::User => "user_direct",
-        PaymentSource::Sponsor => "sponsored",
-    };
-    let status = match payload.status {
-        PaymentStatus::Settled => "settled",
-        PaymentStatus::Failed => "failed",
+    let metrics = {
+        let state = state.inner.read().await;
+        state.metrics.clone()
     };
 
-    state
-        .metrics
-        .payment_events_total
-        .with_label_values(&[mode, status])
-        .inc();
+    let result: ApiResult<(StatusCode, Json<MessageResponse>)> = async {
+        let db = {
+            let state = state.inner.read().await;
+            state.db.clone()
+        }
+        .ok_or_else(|| ApiError::config("Postgres not configured; set DATABASE_URL"))?;
 
-    respond(
-        &state.metrics,
-        "/webhooks/x402scan/settlement",
+        let source_str = match payload.source {
+            PaymentSource::User => "user",
+            PaymentSource::Sponsor => "sponsor",
+        };
+        let status_str = match payload.status {
+            PaymentStatus::Settled => "settled",
+            PaymentStatus::Failed => "failed",
+        };
+
+        sqlx::query(
+            r#"
+            insert into payments (tx_hash, campaign_id, service, amount_cents, payer, source, status, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7, $8)
+            on conflict (tx_hash) do nothing
+            "#,
+        )
+        .bind(&payload.tx_hash)
+        .bind(payload.campaign_id)
+        .bind(&payload.service)
+        .bind(payload.amount_cents as i64)
+        .bind(&payload.payer)
+        .bind(source_str)
+        .bind(status_str)
+        .bind(Utc::now())
+        .execute(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+        let mode = match payload.source {
+            PaymentSource::User => "user_direct",
+            PaymentSource::Sponsor => "sponsored",
+        };
+        let status = match payload.status {
+            PaymentStatus::Settled => "settled",
+            PaymentStatus::Failed => "failed",
+        };
+
+        metrics
+            .payment_events_total
+            .with_label_values(&[mode, status])
+            .inc();
+
         Ok((
             StatusCode::ACCEPTED,
             Json(MessageResponse {
                 message: "settlement ingested".to_string(),
             }),
-        )),
-    )
+        ))
+    }
+    .await;
+
+    respond(&metrics, "/webhooks/x402scan/settlement", result)
 }
 
 async fn sponsor_dashboard(
     State(state): State<SharedState>,
     Path(campaign_id): Path<Uuid>,
 ) -> Response {
-    let needs_reload = {
+    let metrics = {
         let state = state.inner.read().await;
-        state.campaigns.is_empty()
+        state.metrics.clone()
     };
-    if needs_reload {
-        let _ = load_campaigns_from_db(&state).await;
+
+    let result: ApiResult<(StatusCode, Json<SponsorDashboard>)> = async {
+        let db = {
+            let state = state.inner.read().await;
+            state.db.clone()
+        }
+        .ok_or_else(|| ApiError::config("Postgres not configured; set DATABASE_URL"))?;
+
+        // Load campaign from database
+        let campaign_row = sqlx::query_as::<_, CampaignRow>(
+            r#"
+            select id, name, sponsor, target_roles, target_tools, required_task,
+                subsidy_per_call_cents, budget_total_cents, budget_remaining_cents,
+                query_urls, active, created_at
+            from campaigns
+            where id = $1
+            "#,
+        )
+        .bind(campaign_id)
+        .fetch_optional(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .ok_or_else(|| ApiError::not_found("campaign not found"))?;
+
+        let campaign = Campaign::try_from(campaign_row)
+            .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err))?;
+
+        // Count task completions
+        let tasks_completed = sqlx::query_scalar::<_, i64>(
+            "select count(*) from task_completions where campaign_id = $1",
+        )
+        .bind(campaign_id)
+        .fetch_one(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+            as usize;
+
+        // Get sponsored payments
+        let payment_amounts: Vec<i64> = sqlx::query_scalar::<_, i64>(
+            r#"
+            select amount_cents
+            from payments
+            where campaign_id = $1
+              and source = 'sponsor'
+              and status = 'settled'
+            "#,
+        )
+        .bind(campaign_id)
+        .fetch_all(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+        let sponsored_calls = payment_amounts.len();
+        let spend_cents: u64 = payment_amounts
+            .into_iter()
+            .map(|amount| amount as u64)
+            .sum();
+
+        let response = SponsorDashboard {
+            remaining_budget_cents: campaign.budget_remaining_cents,
+            campaign,
+            tasks_completed,
+            sponsored_calls,
+            spend_cents,
+        };
+
+        Ok((StatusCode::OK, Json(response)))
     }
+    .await;
 
-    let state = state.inner.read().await;
-
-    let Some(campaign) = state.campaigns.get(&campaign_id).cloned() else {
-        return respond(
-            &state.metrics,
-            "/dashboard/sponsor/:campaign_id",
-            Err::<Response, ApiError>(ApiError::not_found("campaign not found")),
-        );
-    };
-
-    let tasks_completed = state
-        .task_completions
-        .iter()
-        .filter(|task| task.campaign_id == campaign_id)
-        .count();
-
-    let sponsored_payments: Vec<&PaymentRecord> = state
-        .payments
-        .values()
-        .filter(|record| {
-            record.campaign_id == Some(campaign_id)
-                && record.source == PaymentSource::Sponsor
-                && record.status == PaymentStatus::Settled
-        })
-        .collect();
-
-    let sponsored_calls = sponsored_payments.len();
-    let spend_cents: u64 = sponsored_payments
-        .iter()
-        .map(|record| record.amount_cents)
-        .sum();
-
-    let response = SponsorDashboard {
-        remaining_budget_cents: campaign.budget_remaining_cents,
-        campaign,
-        tasks_completed,
-        sponsored_calls,
-        spend_cents,
-    };
-
-    respond(
-        &state.metrics,
-        "/dashboard/sponsor/:campaign_id",
-        Ok((StatusCode::OK, Json(response))),
-    )
+    respond(&metrics, "/dashboard/sponsor/:campaign_id", result)
 }
 
 async fn record_creator_metric_event(
     State(state): State<SharedState>,
     Json(payload): Json<CreatorMetricEventRequest>,
 ) -> Response {
-    let mut state = state.inner.write().await;
-
-    let event = CreatorEvent {
-        id: Uuid::new_v4(),
-        skill_name: payload.skill_name,
-        platform: payload.platform,
-        event_type: payload.event_type,
-        duration_ms: payload.duration_ms,
-        success: payload.success,
-        created_at: Utc::now(),
+    let metrics = {
+        let state = state.inner.read().await;
+        state.metrics.clone()
     };
 
-    state
-        .metrics
-        .creator_events_total
-        .with_label_values(&[&event.skill_name, &event.platform, &event.event_type])
-        .inc();
+    let result: ApiResult<(StatusCode, Json<CreatorEvent>)> = async {
+        let db = {
+            let state = state.inner.read().await;
+            state.db.clone()
+        }
+        .ok_or_else(|| ApiError::config("Postgres not configured; set DATABASE_URL"))?;
 
-    state.creator_events.push(event.clone());
+        let event = CreatorEvent {
+            id: Uuid::new_v4(),
+            skill_name: payload.skill_name,
+            platform: payload.platform,
+            event_type: payload.event_type,
+            duration_ms: payload.duration_ms,
+            success: payload.success,
+            created_at: Utc::now(),
+        };
 
-    respond(
-        &state.metrics,
-        "/creator/metrics/event",
-        Ok((StatusCode::CREATED, Json(event))),
-    )
+        sqlx::query(
+            r#"
+            insert into creator_events (id, skill_name, platform, event_type, duration_ms, success, created_at)
+            values ($1, $2, $3, $4, $5, $6, $7)
+            "#,
+        )
+        .bind(event.id)
+        .bind(&event.skill_name)
+        .bind(&event.platform)
+        .bind(&event.event_type)
+        .bind(event.duration_ms.map(|d| d as i64))
+        .bind(event.success)
+        .bind(event.created_at)
+        .execute(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+        metrics
+            .creator_events_total
+            .with_label_values(&[&event.skill_name, &event.platform, &event.event_type])
+            .inc();
+
+        Ok((StatusCode::CREATED, Json(event)))
+    }
+    .await;
+
+    respond(&metrics, "/creator/metrics/event", result)
 }
 
 async fn creator_metrics(State(state): State<SharedState>) -> Response {
-    let state = state.inner.read().await;
-
-    let total_events = state.creator_events.len();
-    let success_events = state
-        .creator_events
-        .iter()
-        .filter(|event| event.success)
-        .count();
-    let success_rate = if total_events == 0 {
-        0.0
-    } else {
-        success_events as f64 / total_events as f64
+    let metrics = {
+        let state = state.inner.read().await;
+        state.metrics.clone()
     };
 
-    let mut per_skill_map: HashMap<String, Vec<&CreatorEvent>> = HashMap::new();
-    for event in &state.creator_events {
-        per_skill_map
-            .entry(event.skill_name.clone())
-            .or_default()
-            .push(event);
-    }
+    let result: ApiResult<(StatusCode, Json<CreatorMetricSummary>)> = async {
+        let db = {
+            let state = state.inner.read().await;
+            state.db.clone()
+        }
+        .ok_or_else(|| ApiError::config("Postgres not configured; set DATABASE_URL"))?;
 
-    let mut per_skill: Vec<SkillMetrics> = per_skill_map
-        .into_iter()
-        .map(|(skill_name, events)| {
-            let total = events.len();
-            let success = events.iter().filter(|event| event.success).count();
+        // Get total events and success events
+        let total_events = sqlx::query_scalar::<_, i64>("select count(*) from creator_events")
+            .fetch_one(&db)
+            .await
+            .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+            as usize;
 
-            let duration_values: Vec<u64> = events
-                .iter()
-                .filter_map(|event| event.duration_ms)
-                .collect();
+        let success_events = sqlx::query_scalar::<_, i64>(
+            "select count(*) from creator_events where success = true",
+        )
+        .fetch_one(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+            as usize;
 
-            let avg_duration_ms = if duration_values.is_empty() {
-                None
-            } else {
-                let sum: u64 = duration_values.iter().sum();
-                Some(sum as f64 / duration_values.len() as f64)
-            };
+        let success_rate = if total_events == 0 {
+            0.0
+        } else {
+            success_events as f64 / total_events as f64
+        };
 
-            let last_seen_at = events
-                .iter()
-                .map(|event| event.created_at)
-                .max()
-                .unwrap_or_else(Utc::now);
+        // Get per-skill metrics
+        #[derive(sqlx::FromRow)]
+        struct SkillMetricsRow {
+            skill_name: String,
+            total_events: i64,
+            success_events: i64,
+            avg_duration_ms: Option<f64>,
+            last_seen_at: chrono::DateTime<chrono::Utc>,
+        }
 
-            SkillMetrics {
+        let skill_rows = sqlx::query_as::<_, SkillMetricsRow>(
+            r#"
+            select
                 skill_name,
-                total_events: total,
-                success_events: success,
-                avg_duration_ms,
-                last_seen_at,
-            }
-        })
-        .collect();
+                count(*) as total_events,
+                count(*) filter (where success = true) as success_events,
+                avg(duration_ms) as avg_duration_ms,
+                max(created_at) as last_seen_at
+            from creator_events
+            group by skill_name
+            order by total_events desc, last_seen_at desc
+            "#,
+        )
+        .fetch_all(&db)
+        .await
+        .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    per_skill.sort_by(|left, right| {
-        right
-            .total_events
-            .cmp(&left.total_events)
-            .then_with(|| right.last_seen_at.cmp(&left.last_seen_at))
-    });
+        let per_skill: Vec<SkillMetrics> = skill_rows
+            .into_iter()
+            .map(|row| SkillMetrics {
+                skill_name: row.skill_name,
+                total_events: row.total_events as usize,
+                success_events: row.success_events as usize,
+                avg_duration_ms: row.avg_duration_ms,
+                last_seen_at: row.last_seen_at,
+            })
+            .collect();
 
-    respond(
-        &state.metrics,
-        "/creator/metrics",
         Ok((
             StatusCode::OK,
             Json(CreatorMetricSummary {
@@ -1277,8 +1490,11 @@ async fn creator_metrics(State(state): State<SharedState>) -> Response {
                 success_rate,
                 per_skill,
             }),
-        )),
-    )
+        ))
+    }
+    .await;
+
+    respond(&metrics, "/creator/metrics", result)
 }
 
 async fn prometheus_metrics(State(state): State<SharedState>) -> Response {

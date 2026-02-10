@@ -12,10 +12,11 @@ use uuid::Uuid;
 use crate::error::{ApiError, ApiResult};
 use crate::onchain::{VerifiedX402Payment, verify_and_settle_x402_payment};
 use crate::types::{
-    AppConfig, AppState, Campaign, Metrics, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER,
+    AppConfig, Campaign, Metrics, PAYMENT_RESPONSE_HEADER, PAYMENT_SIGNATURE_HEADER,
     PaymentRequired, SPONSORED_API_SERVICE_PREFIX, ServiceRunRequest, ServiceRunResponse,
     SponsoredApi, UserProfile, X402_VERSION_HEADER, X402PaymentRequirement,
 };
+use sqlx::PgPool;
 
 const USDC_BASE_UNITS_PER_CENT: u128 = 10_000;
 
@@ -53,17 +54,30 @@ pub fn user_matches_campaign(user: &UserProfile, campaign: &Campaign) -> bool {
     role_match && tool_match
 }
 
-pub fn has_completed_task(
-    state: &AppState,
+pub async fn has_completed_task(
+    db: &PgPool,
     campaign_id: Uuid,
     user_id: Uuid,
     required_task: &str,
-) -> bool {
-    state.task_completions.iter().any(|completion| {
-        completion.campaign_id == campaign_id
-            && completion.user_id == user_id
-            && completion.task_name == required_task
-    })
+) -> ApiResult<bool> {
+    let exists = sqlx::query_scalar::<_, bool>(
+        r#"
+        select exists(
+            select 1 from task_completions
+            where campaign_id = $1
+              and user_id = $2
+              and task_name = $3
+        )
+        "#,
+    )
+    .bind(campaign_id)
+    .bind(user_id)
+    .bind(required_task)
+    .fetch_one(db)
+    .await
+    .map_err(|err| ApiError::database(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+
+    Ok(exists)
 }
 
 pub async fn verify_x402_payment(

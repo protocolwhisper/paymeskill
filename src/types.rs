@@ -71,12 +71,6 @@ pub struct SharedState {
 }
 
 pub struct AppState {
-    pub users: HashMap<Uuid, UserProfile>,
-    pub campaigns: HashMap<Uuid, Campaign>,
-    pub task_completions: Vec<TaskCompletion>,
-    pub payments: HashMap<String, PaymentRecord>,
-    pub creator_events: Vec<CreatorEvent>,
-    pub service_prices: HashMap<String, u64>,
     pub metrics: Metrics,
     pub db: Option<PgPool>,
     pub http: Client,
@@ -145,12 +139,6 @@ impl Metrics {
 
 impl AppState {
     pub fn new() -> Self {
-        let mut service_prices = HashMap::new();
-        service_prices.insert("scraping".to_string(), 5);
-        service_prices.insert("design".to_string(), 8);
-        service_prices.insert("storage".to_string(), 3);
-        service_prices.insert("data-tooling".to_string(), 4);
-
         let http = Client::builder()
             .timeout(Duration::from_secs(20))
             .build()
@@ -165,12 +153,6 @@ impl AppState {
         });
 
         Self {
-            users: HashMap::new(),
-            campaigns: HashMap::new(),
-            task_completions: Vec::new(),
-            payments: HashMap::new(),
-            creator_events: Vec::new(),
-            service_prices,
             metrics: Metrics::new(),
             db,
             http,
@@ -179,10 +161,13 @@ impl AppState {
     }
 
     pub fn service_price(&self, service: &str) -> u64 {
-        self.service_prices
-            .get(service)
-            .copied()
-            .unwrap_or(DEFAULT_PRICE_CENTS)
+        match service {
+            "scraping" => 5,
+            "design" => 8,
+            "storage" => 3,
+            "data-tooling" => 4,
+            _ => DEFAULT_PRICE_CENTS,
+        }
     }
 }
 
@@ -353,18 +338,6 @@ pub enum PaymentSource {
 pub enum PaymentStatus {
     Settled,
     Failed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PaymentRecord {
-    pub tx_hash: String,
-    pub campaign_id: Option<Uuid>,
-    pub service: String,
-    pub amount_cents: u64,
-    pub payer: String,
-    pub source: PaymentSource,
-    pub status: PaymentStatus,
-    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
