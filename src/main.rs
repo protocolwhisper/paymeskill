@@ -6,10 +6,11 @@ mod utils;
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::{HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use tower_http::cors::{Any, CorsLayer};
 use chrono::Utc;
 use prometheus::{Encoder, TextEncoder};
 use sqlx::types::Json as DbJson;
@@ -23,6 +24,17 @@ use crate::types::*;
 use crate::utils::*;
 
 fn build_app(state: SharedState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers(Any);
+
     Router::new()
         .route("/health", get(health))
         .route("/profiles", post(create_profile).get(list_profiles))
@@ -47,6 +59,7 @@ fn build_app(state: SharedState) -> Router {
         .route("/creator/metrics/event", post(record_creator_metric_event))
         .route("/creator/metrics", get(creator_metrics))
         .route("/metrics", get(prometheus_metrics))
+        .layer(cors)
         .with_state(state)
 }
 
